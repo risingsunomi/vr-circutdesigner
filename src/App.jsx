@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { SimulationManager } from './lib/simulation.js';
 
-const STORAGE_KEY = 'vr-circuitdesigner-state.v2';
+const STORAGE_KEY = 'vr-circuitdesigner-state.v3';
 const BOARD_HEIGHT = 1.2;
 
 const componentCatalog = {
@@ -46,20 +46,24 @@ const defaultComponents = [
 ];
 
 const instructions = [
-  'Drag components on the 2D map to reshape the circuit in real time.',
+  'Drag components on the breadboard to reshape the circuit in real time.',
   'Add or remove series components to explore different circuit topologies.',
+  'Adjust the board row count from the control dock to open extra routing space.',
   'Focus a component to view its stats hovering directly above it.',
   'Use the multimeter overlay while you reposition components on the board.',
 ];
 
 const breadboardDefaults = {
   segments: 2,
-  columnsPerSegment: 16,
+  columnsPerSegment: 20,
   rowCount: 10,
-  columnPitch: 0.085,
+  columnPitch: 0.092,
   rowPitch: 0.028,
   baseHeight: BOARD_HEIGHT + 0.035,
 };
+
+const MIN_BOARD_ROWS = 6;
+const MAX_BOARD_ROWS = 100;
 
 const DEFAULT_TOTAL_COLUMNS = breadboardDefaults.columnsPerSegment * breadboardDefaults.segments;
 const DEFAULT_TOTAL_ROWS = breadboardDefaults.rowCount;
@@ -74,6 +78,7 @@ export default function App() {
 
   const [components, setComponents] = useState(defaultComponents);
   const [layout, setLayout] = useState(() => generateInitialLayout(defaultComponents));
+  const [boardRows, setBoardRows] = useState(breadboardDefaults.rowCount);
   const [selectedId, setSelectedId] = useState(defaultComponents[1].id);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [solverMeta, setSolverMeta] = useState({ usingEEC: false, error: null });
@@ -106,6 +111,12 @@ export default function App() {
       const saved = window.localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
+        const savedRows = clampInt(
+          parsed?.board?.rows ?? breadboardDefaults.rowCount,
+          MIN_BOARD_ROWS,
+          MAX_BOARD_ROWS,
+        );
+        setBoardRows(savedRows);
         if (Array.isArray(parsed.components) && parsed.components.length >= 2) {
           setComponents(rehydrateComponents(parsed.components));
           setLayout(rehydrateLayout(parsed.layout, parsed.components));
@@ -124,9 +135,37 @@ export default function App() {
 
   useEffect(() => {
     if (!hydrated || typeof window === 'undefined') return;
-    const payload = JSON.stringify({ components, layout });
+    const payload = JSON.stringify({
+      components,
+      layout,
+      board: { rows: boardRows },
+    });
     window.localStorage.setItem(STORAGE_KEY, payload);
-  }, [components, layout, hydrated]);
+  }, [components, layout, boardRows, hydrated]);
+
+  useEffect(() => {
+    const columns = latestBoardMeta.columns ?? DEFAULT_TOTAL_COLUMNS;
+    const rows = clampInt(boardRows, MIN_BOARD_ROWS, MAX_BOARD_ROWS);
+    latestBoardMeta = { columns, rows };
+    setLayout(prev => {
+      if (!prev) return prev;
+      let changed = false;
+      const next = {};
+      Object.entries(prev).forEach(([id, coords]) => {
+        const col = clampInt(coords?.col ?? 0, 0, columns - 1);
+        const row = clampInt(coords?.row ?? 0, 0, rows - 1);
+        next[id] = { col, row };
+        if (!coords || coords.col !== col || coords.row !== row) {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+    const context = sceneContextRef.current;
+    if (context?.setBoardRows) {
+      context.setBoardRows(rows);
+    }
+  }, [boardRows]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -135,7 +174,9 @@ export default function App() {
     const simulator = new SimulationManager(meta => setSolverMeta(prev => ({ ...prev, ...meta })));
     simulatorRef.current = simulator;
 
-    const context = initialiseScene(canvas, vrButtonSlotRef, simulator, handleLayoutChange);
+    const context = initialiseScene(canvas, vrButtonSlotRef, simulator, handleLayoutChange, {
+      rowCount: boardRows,
+    });
     sceneContextRef.current = context;
 
     context.sync({ components: orderedComponents, layout });
@@ -206,20 +247,19 @@ export default function App() {
     setComponents(prev => reorderComponent(prev, id, direction));
   };
 
+  const handleBoardRowsChange = useCallback(value => {
+    setBoardRows(prev => {
+      const next = clampInt(value, MIN_BOARD_ROWS, MAX_BOARD_ROWS);
+      return next === prev ? prev : next;
+    });
+  }, []);
+
   const selectedComponent = components.find(component => component.id === selectedId);
 
   return (
     <div className="app-root">
       <canvas ref={canvasRef} className="webgl-canvas" />
       <div ref={vrButtonSlotRef} className="vr-button-slot" />
-
-      <CircuitMap
-        components={orderedComponents}
-        layout={layout}
-        selectedId={selectedId}
-        onSelect={setSelectedId}
-        onLayoutChange={handleLayoutChange}
-      />
 
       <ControlDock
         open={controlsOpen}
@@ -231,6 +271,9 @@ export default function App() {
         onAddComponent={handleAddComponent}
         onRemove={handleRemoveComponent}
         onMove={handleMoveComponent}
+        boardRows={boardRows}
+        onBoardRowsChange={handleBoardRowsChange}
+        rowLimits={{ min: MIN_BOARD_ROWS, max: MAX_BOARD_ROWS }}
         instructions={instructions}
         solverMeta={solverMeta}
       />
@@ -238,14 +281,15 @@ export default function App() {
   );
 }
 
-function initialiseScene(canvas, vrButtonSlotRef, simulator, onLayoutChange) {
+function initialiseScene(canvas, vrButtonSlotRef, simulator, onLayoutChange, boardOptions = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.xr.enabled = true;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xcad8c0);
+  scene.background = new THREE.Color(0x040b11);
+  scene.fog = new THREE.Fog(0x040b11, 14, 35);
 
   const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
   camera.position.set(0, 1.65, 3.6);
@@ -267,53 +311,85 @@ function initialiseScene(canvas, vrButtonSlotRef, simulator, onLayoutChange) {
   controls.minPolarAngle = THREE.MathUtils.degToRad(25);
   controls.maxPolarAngle = THREE.MathUtils.degToRad(135);
   controls.enableRotate = true;
-  controls.enableZoom = false;
+  controls.enableZoom = true;
+  controls.zoomSpeed = 0.85;
   controls.enabled = true;
 
-  const hemiLight = new THREE.HemisphereLight(0xd8e6c8, 0x2b3324, 1.05);
+  const hemiLight = new THREE.HemisphereLight(0x5ab9a4, 0x07110c, 0.95);
   hemiLight.position.set(0, 6, 0);
   scene.add(hemiLight);
 
-  const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-  dirLight.position.set(3.8, 6.5, 5.2);
+  const dirLight = new THREE.DirectionalLight(0xb9fff4, 1.1);
+  dirLight.position.set(3.8, 6.8, 5.6);
   dirLight.castShadow = true;
   scene.add(dirLight);
 
-  scene.add(new THREE.AmbientLight(0xcfd6c5, 0.35));
+  scene.add(new THREE.AmbientLight(0x254a44, 0.42));
 
-  const rimLight = new THREE.PointLight(0xe3f2c7, 0.45, 9);
-  rimLight.position.set(-3.5, 3.2, 2.4);
+  const rimLight = new THREE.PointLight(0x52ffd2, 0.35, 10);
+  rimLight.position.set(-3.5, 3.4, 2.8);
   scene.add(rimLight);
 
-  const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(12, 64),
+  const matTexture = createCuttingMatTexture();
+  const maxAniso = renderer.capabilities?.getMaxAnisotropy?.() ?? 1;
+  matTexture.anisotropy = Math.max(1, Math.min(maxAniso, 16));
+
+  const matBorder = new THREE.Mesh(
+    new THREE.PlaneGeometry(18.4, 12.6),
     new THREE.MeshStandardMaterial({
-      color: 0xe7ebe0,
-      roughness: 0.9,
-      metalness: 0.03,
+      color: 0x123524,
+      roughness: 0.78,
+      metalness: 0.04,
+      emissive: 0x071a11,
+      emissiveIntensity: 0.18,
+      side: THREE.DoubleSide,
     }),
   );
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  scene.add(ground);
+  matBorder.rotation.x = -Math.PI / 2;
+  matBorder.position.y = -0.0006;
+  matBorder.receiveShadow = true;
+  scene.add(matBorder);
 
-  const grid = new THREE.GridHelper(12, 36, 0xd0d7c8, 0xb7bfad);
-  grid.position.y = 0.001;
-  scene.add(grid);
+  const matSurface = new THREE.Mesh(
+    new THREE.PlaneGeometry(18, 12),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.48,
+      metalness: 0.06,
+      map: matTexture,
+      emissive: 0x0b2517,
+      emissiveIntensity: 0.16,
+    }),
+  );
+  matSurface.rotation.x = -Math.PI / 2;
+  matSurface.position.y = 0;
+  matSurface.receiveShadow = true;
+  scene.add(matSurface);
+
+  const config = {
+    ...breadboardDefaults,
+    ...boardOptions,
+  };
 
   const breadboardState = {
-    segments: breadboardDefaults.segments,
-    columnsPerSegment: breadboardDefaults.columnsPerSegment,
-    rowCount: breadboardDefaults.rowCount,
-    columnPitch: breadboardDefaults.columnPitch,
-    rowPitch: breadboardDefaults.rowPitch,
-    baseHeight: breadboardDefaults.baseHeight,
+    segments: config.segments,
+    columnsPerSegment: config.columnsPerSegment,
+    rowCount: config.rowCount,
+    columnPitch: config.columnPitch,
+    rowPitch: config.rowPitch,
+    baseHeight: config.baseHeight,
     group: null,
     surfaceGroup: null,
-    width: breadboardDefaults.columnsPerSegment * breadboardDefaults.columnPitch * breadboardDefaults.segments,
-    depth: breadboardDefaults.rowCount * breadboardDefaults.rowPitch,
+    width: config.columnsPerSegment * config.columnPitch * config.segments,
+    depth: config.rowCount * config.rowPitch,
     gridToPosition: () => new THREE.Vector3(),
     positionToGrid: () => ({ col: 0, row: 0 }),
+    columnPositions: [],
+    rowPositions: [],
+    railTargets: null,
+    powerAnchor: null,
+    powerCableGroup: null,
+    powerCables: [],
   };
 
   buildBreadboard();
@@ -365,106 +441,300 @@ function initialiseScene(canvas, vrButtonSlotRef, simulator, onLayoutChange) {
     if (breadboardState.group) {
       scene.remove(breadboardState.group);
     }
+    disposePowerCables();
+    breadboardState.powerCableGroup = null;
+    breadboardState.powerCables = [];
+    breadboardState.powerAnchor = null;
+    breadboardState.railTargets = null;
 
     const columns = breadboardState.segments * breadboardState.columnsPerSegment;
     const rows = breadboardState.rowCount;
-    breadboardState.width = columns * breadboardState.columnPitch;
-    breadboardState.depth = rows * breadboardState.rowPitch;
+    const columnPositions = new Array(columns);
+    for (let col = 0; col < columns; col += 1) {
+      columnPositions[col] = (col - (columns - 1) / 2) * breadboardState.columnPitch;
+    }
 
-    const group = new THREE.Group();
+    const baseRowPitch = breadboardState.rowPitch;
+    const channelBreakIndex = Math.max(0, Math.floor(rows / 2) - 1);
+    const channelGap = rows > 1 ? baseRowPitch * 2.3 : 0;
+    const increments = new Array(Math.max(rows - 1, 0)).fill(baseRowPitch);
+    if (increments.length > 0 && channelGap > 0 && channelBreakIndex < increments.length) {
+      increments[channelBreakIndex] = channelGap;
+    }
 
-    const baseWidth = breadboardState.width + 0.22;
-    const baseDepth = breadboardState.depth + 0.22;
-    const base = new THREE.Mesh(
-      new THREE.BoxGeometry(baseWidth, 0.14, baseDepth),
-      new THREE.MeshStandardMaterial({
-        color: 0xe4e9df,
-        metalness: 0.15,
-        roughness: 0.6,
-        emissive: 0xd9dfd4,
-        emissiveIntensity: 0.16,
-      }),
-    );
-    base.position.set(0, BOARD_HEIGHT + 0.07, 0);
-    base.receiveShadow = true;
-    base.castShadow = true;
-    group.add(base);
+    let totalSpan = 0;
+    increments.forEach(value => {
+      totalSpan += value;
+    });
 
-    const topCanvas = document.createElement('canvas');
-    topCanvas.width = 1024;
-    topCanvas.height = 512;
-    const ctx = topCanvas.getContext('2d');
-    ctx.fillStyle = '#f8f9f5';
-    ctx.fillRect(0, 0, topCanvas.width, topCanvas.height);
-
-    const railHeight = 68;
-    ctx.fillStyle = '#e0e4d9';
-    ctx.fillRect(0, railHeight, topCanvas.width, topCanvas.height - railHeight * 2);
-
-    ctx.strokeStyle = '#c0c6ba';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(40, 40, topCanvas.width - 80, topCanvas.height - 80);
-
-    ctx.fillStyle = '#d9534f';
-    ctx.fillRect(60, 60, topCanvas.width - 120, 24);
-    ctx.fillStyle = '#4a90e2';
-    ctx.fillRect(60, topCanvas.height - 84, topCanvas.width - 120, 24);
-
-    ctx.fillStyle = '#9ca69a';
-    const holeRadius = 4;
-    const holeSpacingX = (topCanvas.width - 120) / Math.max(columns - 1, 1);
-    const holeSpacingY = (topCanvas.height - 200) / Math.max(rows - 1, 1);
-    for (let row = 0; row < rows; row += 1) {
-      for (let col = 0; col < columns; col += 1) {
-        const x = 60 + col * holeSpacingX;
-        const y = 120 + row * holeSpacingY;
-        ctx.beginPath();
-        ctx.arc(x, y, holeRadius, 0, Math.PI * 2);
-        ctx.fill();
+    const rowPositions = new Array(rows);
+    if (rows > 0) {
+      const startZ = rows > 1 ? -totalSpan / 2 : 0;
+      rowPositions[0] = startZ;
+      for (let row = 1; row < rows; row += 1) {
+        rowPositions[row] = rowPositions[row - 1] + increments[row - 1];
       }
     }
 
-    const topTexture = new THREE.CanvasTexture(topCanvas);
-    topTexture.colorSpace = THREE.SRGBColorSpace;
-    topTexture.anisotropy = 4;
+    const holeSpan = rows > 1 ? Math.abs(rowPositions[rows - 1] - rowPositions[0]) : 0;
+    const boardMargin = baseRowPitch * 1.8;
 
-    const top = new THREE.Mesh(
-      new THREE.PlaneGeometry(breadboardState.width + 0.12, breadboardState.depth + 0.12),
+    breadboardState.width = columns * breadboardState.columnPitch;
+    breadboardState.depth = holeSpan + boardMargin * 2;
+    breadboardState.columnPositions = columnPositions;
+    breadboardState.rowPositions = rowPositions;
+
+    const group = new THREE.Group();
+
+    const plinthWidth = breadboardState.width + 0.24;
+    const plinthDepth = breadboardState.depth + 0.24;
+    const plinthThickness = 0.12;
+    const boardThickness = 0.04;
+
+    const plinth = new THREE.Mesh(
+      new THREE.BoxGeometry(plinthWidth, plinthThickness, plinthDepth),
       new THREE.MeshStandardMaterial({
-        map: topTexture,
-        roughness: 0.38,
-        metalness: 0.1,
-        emissive: 0xf1f3ec,
+        color: 0xdfe6d8,
+        metalness: 0.12,
+        roughness: 0.55,
+        emissive: 0xcdd7c8,
         emissiveIntensity: 0.12,
+      }),
+    );
+    plinth.receiveShadow = true;
+    plinth.castShadow = true;
+    plinth.position.set(0, breadboardState.baseHeight - boardThickness - plinthThickness / 2, 0);
+    group.add(plinth);
+
+    const deck = new THREE.Mesh(
+      new THREE.BoxGeometry(breadboardState.width + 0.06, boardThickness, breadboardState.depth + 0.06),
+      new THREE.MeshStandardMaterial({
+        color: 0xf0f4ea,
+        metalness: 0.08,
+        roughness: 0.35,
+        emissive: 0xe2e9dc,
+        emissiveIntensity: 0.18,
+      }),
+    );
+    deck.receiveShadow = true;
+    deck.castShadow = true;
+    deck.position.set(0, breadboardState.baseHeight - boardThickness / 2, 0);
+    group.add(deck);
+
+    const surfaceY = breadboardState.baseHeight + 0.0006;
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(breadboardState.width + 0.04, breadboardState.depth + 0.04),
+      new THREE.MeshStandardMaterial({
+        color: 0xf9fbf5,
+        roughness: 0.3,
+        metalness: 0.05,
+        emissive: 0xf0f3ec,
+        emissiveIntensity: 0.16,
         side: THREE.DoubleSide,
       }),
     );
-    top.rotation.x = -Math.PI / 2;
-    top.position.set(0, breadboardState.baseHeight - 0.015, 0);
-    top.receiveShadow = true;
-    group.add(top);
+    face.rotation.x = -Math.PI / 2;
+    face.position.set(0, surfaceY, 0);
+    face.receiveShadow = true;
+    group.add(face);
+
+    if (rows > 1) {
+      const channelCenter = (rowPositions[channelBreakIndex] + rowPositions[channelBreakIndex + 1]) / 2;
+      const channel = new THREE.Mesh(
+        new THREE.PlaneGeometry(breadboardState.width + 0.05, channelGap * 0.9),
+        new THREE.MeshStandardMaterial({
+          color: 0xe6ebdf,
+          roughness: 0.42,
+          metalness: 0.04,
+          emissive: 0xd9dece,
+          emissiveIntensity: 0.08,
+          side: THREE.DoubleSide,
+        }),
+      );
+      channel.rotation.x = -Math.PI / 2;
+      channel.position.set(0, surfaceY + 0.0004, channelCenter);
+      group.add(channel);
+    }
+
+    const hasPowerRails = rows >= 2;
+    const topRailZ = hasPowerRails
+      ? rowPositions[0] - baseRowPitch * 1.5
+      : rowPositions[0] ?? 0;
+    const bottomRailZ = hasPowerRails
+      ? rowPositions[rows - 1] + baseRowPitch * 1.5
+      : rowPositions[rows - 1] ?? 0;
+
+    if (hasPowerRails) {
+      const railMaterialPos = new THREE.MeshStandardMaterial({
+        color: 0xcf5a3d,
+        metalness: 0.82,
+        roughness: 0.28,
+        emissive: 0x601c11,
+        emissiveIntensity: 0.28,
+      });
+      const railMaterialNeg = new THREE.MeshStandardMaterial({
+        color: 0x2d66c3,
+        metalness: 0.82,
+        roughness: 0.28,
+        emissive: 0x11275a,
+        emissiveIntensity: 0.24,
+      });
+      const railWidth = breadboardState.width + 0.05;
+      const railDepth = 0.022;
+      const railThickness = 0.0035;
+
+      const topRail = new THREE.Mesh(
+        new THREE.BoxGeometry(railWidth, railThickness, railDepth),
+        railMaterialPos,
+      );
+      topRail.position.set(0, surfaceY + 0.0008, topRailZ);
+      group.add(topRail);
+
+      const bottomRail = new THREE.Mesh(
+        new THREE.BoxGeometry(railWidth, railThickness, railDepth),
+        railMaterialNeg,
+      );
+      bottomRail.position.set(0, surfaceY + 0.0008, bottomRailZ);
+      group.add(bottomRail);
+    }
+
+    const padCount = columns * rows;
+    if (padCount > 0) {
+      const padGeometry = new THREE.RingGeometry(0.018, 0.008, 24);
+      padGeometry.rotateX(-Math.PI / 2);
+      const padMaterial = new THREE.MeshStandardMaterial({
+        color: 0xd6a257,
+        metalness: 0.94,
+        roughness: 0.22,
+        emissive: 0x6a3810,
+        emissiveIntensity: 0.16,
+        side: THREE.DoubleSide,
+      });
+      const padMesh = new THREE.InstancedMesh(padGeometry, padMaterial, padCount);
+      const holeGeometry = new THREE.CylinderGeometry(0.0065, 0.0065, boardThickness + 0.008, 16);
+      const holeMaterial = new THREE.MeshStandardMaterial({
+        color: 0x1d2118,
+        roughness: 0.85,
+        metalness: 0.12,
+        emissive: 0x050604,
+        emissiveIntensity: 0.02,
+      });
+      const holeMesh = new THREE.InstancedMesh(holeGeometry, holeMaterial, padCount);
+      holeGeometry.translate(0, -boardThickness / 2 - 0.004, 0);
+
+      const dummy = new THREE.Object3D();
+      let index = 0;
+      for (let row = 0; row < rows; row += 1) {
+        for (let col = 0; col < columns; col += 1) {
+          const x = columnPositions[col];
+          const z = rowPositions[row];
+          dummy.position.set(x, surfaceY + 0.0009, z);
+          dummy.rotation.set(0, 0, 0);
+          dummy.updateMatrix();
+          padMesh.setMatrixAt(index, dummy.matrix);
+          dummy.position.set(x, breadboardState.baseHeight - 0.0005, z);
+          dummy.updateMatrix();
+          holeMesh.setMatrixAt(index, dummy.matrix);
+          index += 1;
+        }
+      }
+      padMesh.instanceMatrix.needsUpdate = true;
+      holeMesh.instanceMatrix.needsUpdate = true;
+      group.add(padMesh);
+      group.add(holeMesh);
+    }
+
+    if (rows >= 2 && columns > 0) {
+      const topEndIndex = Math.max(0, Math.floor(rows / 2) - 1);
+      const bottomStartIndex = Math.min(rows - 1, Math.floor(rows / 2));
+      const topMid = (rowPositions[0] + rowPositions[topEndIndex]) / 2;
+      const bottomMid = (rowPositions[rows - 1] + rowPositions[bottomStartIndex]) / 2;
+      const topLength =
+        Math.max(Math.abs(rowPositions[topEndIndex] - rowPositions[0]), 0.0001) + baseRowPitch * 0.6;
+      const bottomLength =
+        Math.max(Math.abs(rowPositions[rows - 1] - rowPositions[bottomStartIndex]), 0.0001) +
+        baseRowPitch * 0.6;
+
+      const traceMaterial = new THREE.MeshStandardMaterial({
+        color: 0xd1a366,
+        metalness: 0.9,
+        roughness: 0.26,
+        emissive: 0x5f360e,
+        emissiveIntensity: 0.12,
+      });
+      const traceWidth = 0.016;
+      const traceThickness = 0.0024;
+
+      const topTraceGeometry = new THREE.BoxGeometry(traceWidth, traceThickness, topLength);
+      const bottomTraceGeometry = new THREE.BoxGeometry(traceWidth, traceThickness, bottomLength);
+      const topTraces = new THREE.InstancedMesh(topTraceGeometry, traceMaterial, columns);
+      const bottomTraces = new THREE.InstancedMesh(bottomTraceGeometry, traceMaterial, columns);
+      const traceDummy = new THREE.Object3D();
+
+      for (let col = 0; col < columns; col += 1) {
+        const x = columnPositions[col];
+        traceDummy.position.set(x, surfaceY + 0.0012, topMid);
+        traceDummy.updateMatrix();
+        topTraces.setMatrixAt(col, traceDummy.matrix);
+
+        traceDummy.position.set(x, surfaceY + 0.0012, bottomMid);
+        traceDummy.updateMatrix();
+        bottomTraces.setMatrixAt(col, traceDummy.matrix);
+      }
+      topTraces.instanceMatrix.needsUpdate = true;
+      bottomTraces.instanceMatrix.needsUpdate = true;
+      group.add(topTraces);
+      group.add(bottomTraces);
+    }
 
     const surfaceGroup = new THREE.Group();
-    surfaceGroup.position.y = breadboardState.baseHeight;
     preserved.forEach(child => surfaceGroup.add(child));
     group.add(surfaceGroup);
+
+    breadboardState.railTargets = hasPowerRails
+      ? {
+          positive: new THREE.Vector3(-breadboardState.width / 2 - 0.01, surfaceY + 0.002, topRailZ),
+          negative: new THREE.Vector3(-breadboardState.width / 2 - 0.01, surfaceY + 0.002, bottomRailZ),
+        }
+      : null;
+    breadboardState.powerAnchor = new THREE.Vector3(
+      -breadboardState.width / 2 - 0.32,
+      breadboardState.baseHeight - 0.08,
+      hasPowerRails ? (topRailZ + bottomRailZ) / 2 : 0,
+    );
+    breadboardState.powerCableGroup = new THREE.Group();
+    breadboardState.powerCables = [];
+    group.add(breadboardState.powerCableGroup);
+
+    const findClosestIndex = (list, value) => {
+      if (!list || list.length === 0) return 0;
+      let bestIndex = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < list.length; i += 1) {
+        const distance = Math.abs(list[i] - value);
+        if (distance < bestDistance) {
+          bestIndex = i;
+          bestDistance = distance;
+        }
+      }
+      return bestIndex;
+    };
 
     breadboardState.group = group;
     breadboardState.surfaceGroup = surfaceGroup;
     breadboardState.gridToPosition = (col, row) => {
-      const columns = breadboardState.segments * breadboardState.columnsPerSegment;
-      const rows = breadboardState.rowCount;
-      const x = (col - (columns - 1) / 2) * breadboardState.columnPitch;
-      const z = (row - (rows - 1) / 2) * breadboardState.rowPitch;
+      const clampedCol = clampInt(col, 0, columns - 1);
+      const clampedRow = clampInt(row, 0, rows - 1);
+      const x = columnPositions[clampedCol] ?? 0;
+      const z = rowPositions[clampedRow] ?? 0;
       return new THREE.Vector3(x, breadboardState.baseHeight, z);
     };
     breadboardState.positionToGrid = (x, z) => {
-      const columns = breadboardState.segments * breadboardState.columnsPerSegment;
-      const rows = breadboardState.rowCount;
-      const col = clampInt(Math.round(x / breadboardState.columnPitch + (columns - 1) / 2), 0, columns - 1);
-      const row = clampInt(Math.round(z / breadboardState.rowPitch + (rows - 1) / 2), 0, rows - 1);
+      const col = findClosestIndex(columnPositions, x);
+      const row = findClosestIndex(rowPositions, z);
       return { col, row };
     };
+
     latestBoardMeta = { columns, rows };
     updateMeasurementBounds();
     scene.add(group);
@@ -572,11 +842,29 @@ function removeComponent(id) {
   function updateComponentPosition(id, layout) {
     const ref = componentRefs.get(id);
     if (!ref) return;
+    if (ref.instance.type === 'source') {
+      if (!breadboardState.powerAnchor) {
+        const rows = breadboardState.rowPositions.length;
+        const top = rows > 0 ? breadboardState.rowPositions[0] : 0;
+        const bottom = rows > 0 ? breadboardState.rowPositions[rows - 1] : 0;
+        const centerZ = rows > 0 ? (top + bottom) / 2 : 0;
+        breadboardState.powerAnchor = new THREE.Vector3(
+          -breadboardState.width / 2 - 0.32,
+          breadboardState.baseHeight - 0.08,
+          centerZ,
+        );
+      }
+      ref.group.position.copy(breadboardState.powerAnchor);
+      ref.group.rotation.set(0, 0, 0);
+      ref.group.userData.grid = null;
+      syncPowerCables(ref.group);
+      return;
+    }
     const coords = layout[id] ?? generateSpawnCoordinate(0);
     const columns = breadboardState.segments * breadboardState.columnsPerSegment;
     const rows = breadboardState.rowCount;
     const col = clampInt(coords.col ?? 0, 0, columns - 1);
-   const row = clampInt(coords.row ?? 0, 0, rows - 1);
+    const row = clampInt(coords.row ?? 0, 0, rows - 1);
     const pos = breadboardState.gridToPosition(col, row);
     const offsetY = componentYOffset(ref.instance.type);
     ref.group.position.set(pos.x, pos.y + offsetY, pos.z);
@@ -595,76 +883,68 @@ function removeComponent(id) {
     });
     wireRefs.length = 0;
 
+    // Legacy wire rendering disabled for breadboard workflow.
     if (orderedComponents.length < 2) return;
+  }
 
-    const pairs = [];
-    for (let i = 0; i < orderedComponents.length - 1; i += 1) {
-      pairs.push([orderedComponents[i], orderedComponents[i + 1]]);
-    }
-    pairs.push([orderedComponents[orderedComponents.length - 1], orderedComponents[0]]);
+  function disposePowerCables() {
+    if (!breadboardState.powerCables || breadboardState.powerCables.length === 0) return;
+    breadboardState.powerCables.forEach(mesh => {
+      if (!mesh) return;
+      if (mesh.parent) mesh.parent.remove(mesh);
+      if (mesh.material) {
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach(material => material?.dispose?.());
+        } else if (mesh.material.dispose) {
+          mesh.material.dispose();
+        }
+      }
+      if (mesh.geometry?.dispose) mesh.geometry.dispose();
+    });
+    breadboardState.powerCables = [];
+  }
 
-    pairs.forEach(([from, to], index) => {
-      const wireId = `wire-${index}`;
-      const group = new THREE.Group();
+  function syncPowerCables(sourceGroup) {
+    if (!sourceGroup) return;
+    if (!breadboardState.group || !breadboardState.powerCableGroup) return;
+    if (!breadboardState.railTargets) return;
+    const { connectors } = sourceGroup.userData ?? {};
+    if (!connectors?.positive || !connectors?.negative) return;
 
-      const points = computeWirePoints(
-        componentRefs.get(from.id)?.group.position,
-        componentRefs.get(to.id)?.group.position,
-        index,
-      );
-      if (!points) return;
+    disposePowerCables();
 
-      const curve = new THREE.CatmullRomCurve3(points);
-      const mesh = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, 80, 0.022, 16, false),
-        new THREE.MeshStandardMaterial({
-          color: 0x102347,
-          metalness: 0.88,
-          roughness: 0.2,
-          emissive: 0x081628,
-          emissiveIntensity: 0.42,
-        }),
-      );
+    const toBoardSpace = worldPosition => breadboardState.group.worldToLocal(worldPosition.clone());
+
+    const positiveStartWorld = sourceGroup.localToWorld(connectors.positive.clone());
+    const negativeStartWorld = sourceGroup.localToWorld(connectors.negative.clone());
+    const positiveStart = toBoardSpace(positiveStartWorld);
+    const negativeStart = toBoardSpace(negativeStartWorld);
+    const positiveEnd = breadboardState.railTargets.positive?.clone();
+    const negativeEnd = breadboardState.railTargets.negative?.clone();
+    if (!positiveEnd || !negativeEnd) return;
+
+    const createCable = (start, end, color, emissive) => {
+      const mid = start.clone().lerp(end, 0.5);
+      mid.y += 0.05;
+      const curve = new THREE.CatmullRomCurve3([start.clone(), mid, end.clone()]);
+      const geometry = new THREE.TubeGeometry(curve, 48, 0.008, 14, false);
+      const material = new THREE.MeshStandardMaterial({
+        color,
+        metalness: 0.78,
+        roughness: 0.32,
+        emissive,
+        emissiveIntensity: 0.24,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      mesh.userData = {
-        id: wireId,
-        kind: 'wire',
-        name: `Trace ${index + 1}`,
-        description: `Connects ${getComponentLabel(from)} → ${getComponentLabel(to)}.`,
-        wireIndex: index,
-      };
-      registerInteractiveMesh(mesh, mesh.userData);
-      registerMaterial(mesh.material, { componentId: `wire-${index}`, type: 'wire' });
+      breadboardState.powerCableGroup.add(mesh);
+      return mesh;
+    };
 
-      const dashed = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(curve.getSpacedPoints(160)),
-        new THREE.LineDashedMaterial({
-          color: 0x74d6ff,
-          linewidth: 1,
-          scale: 1,
-          dashSize: 0.08,
-          gapSize: 0.05,
-          transparent: true,
-          opacity: 0.7,
-        }),
-      );
-      dashed.computeLineDistances();
-
-      group.add(mesh);
-      group.add(dashed);
-      breadboardState.surfaceGroup.add(group);
-
-      wireRefs.push({
-        id: wireId,
-        group,
-        mesh,
-        line: dashed,
-        index,
-        simKey: `wire-${index}`,
-        baseSpeed: 1.4 + Math.sin(index * 0.8) * 0.2,
-      });
-    });
+    const positiveCable = createCable(positiveStart, positiveEnd, 0xc3412f, 0x631b10);
+    const negativeCable = createCable(negativeStart, negativeEnd, 0x1f53b6, 0x0b1f4f);
+    breadboardState.powerCables = [positiveCable, negativeCable].filter(Boolean);
   }
 
   function sync({ components, layout }) {
@@ -683,6 +963,17 @@ function removeComponent(id) {
     components.forEach(component => updateComponentPosition(component.id, layout));
     rebuildWires(components, layout);
     updateMeasurementPanels(0);
+  }
+
+  function applyBoardRows(nextRows) {
+    const target = clampInt(nextRows, MIN_BOARD_ROWS, MAX_BOARD_ROWS);
+    if (!Number.isFinite(target) || target === breadboardState.rowCount) return;
+    const preserved = breadboardState.surfaceGroup ? [...breadboardState.surfaceGroup.children] : [];
+    breadboardState.rowCount = target;
+    buildBreadboard(preserved);
+    if (lastSyncPayload) {
+      sync(lastSyncPayload);
+    }
   }
 
   function toScreenPosition(object) {
@@ -847,7 +1138,7 @@ function removeComponent(id) {
 
     if (hit && hit.userData?.kind === 'component' && event.button === 0 && !dragState.active) {
       const entry = componentRefs.get(hit.userData.id);
-      if (entry?.group) {
+      if (entry?.group && entry.instance.type !== 'source') {
         event.preventDefault();
         dragState.active = true;
         dragState.pointerId = event.pointerId;
@@ -1027,9 +1318,19 @@ function removeComponent(id) {
       renderer.domElement.removeEventListener('pointerup', handlePointerUp);
       renderer.domElement.removeEventListener('pointercancel', handlePointerUp);
       window.removeEventListener('resize', onResize);
+      disposePowerCables();
+      if (breadboardState.group) {
+        scene.remove(breadboardState.group);
+        breadboardState.group.traverse(child => {
+          if (!child.isMesh) return;
+          if (child.material?.dispose) child.material.dispose();
+          if (child.geometry?.dispose) child.geometry.dispose();
+        });
+      }
       renderer.dispose();
       if (vrButton.parentElement) vrButton.parentElement.removeChild(vrButton);
     },
+    setBoardRows: applyBoardRows,
   };
 }
 
@@ -1043,15 +1344,57 @@ function ControlDock({
   onAddComponent,
   onRemove,
   onMove,
+  boardRows,
+  onBoardRowsChange,
+  rowLimits,
   instructions,
   solverMeta,
 }) {
+  const minRows = rowLimits?.min ?? MIN_BOARD_ROWS;
+  const maxRows = rowLimits?.max ?? MAX_BOARD_ROWS;
+
+  const handleRowSliderChange = event => {
+    onBoardRowsChange?.(Number(event.target.value));
+  };
+
+  const handleRowInputChange = event => {
+    const raw = Number(event.target.value);
+    if (Number.isFinite(raw)) {
+      onBoardRowsChange?.(clampInt(raw, minRows, maxRows));
+    }
+  };
+
   return (
     <div className={`controls-panel ${open ? 'controls-panel--open' : ''}`}>
       <button className="controls-toggle" type="button" onClick={onToggle}>
         {open ? 'Hide Controls' : 'Show Controls'}
       </button>
       <div className="controls-content">
+        <section className="controls-section">
+          <h3>Board Setup</h3>
+          <div className="control">
+            <label>
+              <span>Row Count</span>
+              <span className="control-value">{boardRows}</span>
+            </label>
+            <input
+              type="range"
+              min={minRows}
+              max={maxRows}
+              step={1}
+              value={boardRows}
+              onChange={handleRowSliderChange}
+            />
+            <input
+              type="number"
+              min={minRows}
+              max={maxRows}
+              value={boardRows}
+              onChange={handleRowInputChange}
+              className="control-input"
+            />
+          </div>
+        </section>
         <section className="controls-section">
           <h3>Series Components</h3>
           <ul className="component-list">
@@ -1148,105 +1491,91 @@ function ComponentSlider({ component, onParamChange }) {
   );
 }
 
-function CircuitMap({ components, layout, selectedId, onSelect, onLayoutChange }) {
-  const svgRef = useRef(null);
-  const dragRef = useRef(null);
+function createCuttingMatTexture({
+  width = 2048,
+  height = 1536,
+  minorStep = 56,
+  majorEvery = 5,
+  baseColor = '#1f4b36',
+  minorColor = 'rgba(137, 207, 155, 0.35)',
+  majorColor = 'rgba(203, 255, 211, 0.65)',
+  borderColor = '#f6d36b',
+  labelColor = 'rgba(240, 255, 244, 0.7)',
+} = {}) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
 
-  const layoutEntries = Object.entries(layout ?? {});
-  const totalColumns = Math.max(
-    latestBoardMeta.columns ?? DEFAULT_TOTAL_COLUMNS,
-    ...layoutEntries.map(([, coords]) => (coords?.col ?? 0) + 1),
-  );
-  const totalRows = latestBoardMeta.rows ?? DEFAULT_TOTAL_ROWS;
+  ctx.fillStyle = baseColor;
+  ctx.fillRect(0, 0, width, height);
 
-  const toSvgCoords = (coords = { col: 0, row: 0 }) => {
-    const col = clampInt(coords.col ?? 0, 0, totalColumns - 1);
-    const row = clampInt(coords.row ?? 0, 0, totalRows - 1);
-    const x = 12 + (totalColumns > 1 ? (col / (totalColumns - 1)) * 76 : 38);
-    const y = 12 + (totalRows > 1 ? (row / (totalRows - 1)) * 76 : 38);
-    return { x, y };
-  };
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = minorColor;
+  for (let x = 0; x <= width; x += minorStep) {
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, height);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= height; y += minorStep) {
+    ctx.beginPath();
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(width, y + 0.5);
+    ctx.stroke();
+  }
 
-  const updateCoordinates = (event, id) => {
-    if (!svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const relativeX = clamp((event.clientX - rect.left - 12) / 76, 0, 1);
-    const relativeY = clamp((event.clientY - rect.top - 12) / 76, 0, 1);
-    const col = clampInt(Math.round(relativeX * (totalColumns - 1)), 0, totalColumns - 1);
-    const row = clampInt(Math.round(relativeY * (totalRows - 1)), 0, totalRows - 1);
-    onLayoutChange(id, { col, row });
-  };
+  const majorStep = minorStep * majorEvery;
+  ctx.lineWidth = 2.6;
+  ctx.strokeStyle = majorColor;
+  for (let x = 0; x <= width; x += majorStep) {
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, height);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= height; y += majorStep) {
+    ctx.beginPath();
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(width, y + 0.5);
+    ctx.stroke();
+  }
 
-  const handlePointerMove = event => {
-    if (!dragRef.current) return;
-    updateCoordinates(event, dragRef.current);
-  };
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = 10;
+  ctx.strokeRect(22, 22, width - 44, height - 44);
 
-  const handlePointerUp = () => {
-    dragRef.current = null;
-    window.removeEventListener('pointermove', handlePointerMove);
-    window.removeEventListener('pointerup', handlePointerUp);
-  };
+  ctx.strokeStyle = 'rgba(255, 255, 220, 0.08)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(22, 22);
+  ctx.lineTo(width - 22, height - 22);
+  ctx.moveTo(22, height - 22);
+  ctx.lineTo(width - 22, 22);
+  ctx.stroke();
 
-  const handlePointerDown = (event, id) => {
-    event.preventDefault();
-    dragRef.current = id;
-    onSelect(id);
-    updateCoordinates(event, id);
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp, { once: true });
-  };
+  ctx.fillStyle = labelColor;
+  ctx.font = `${Math.round(minorStep * 0.7)}px "IBM Plex Mono", "Courier New", monospace`;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  let labelIndex = 0;
+  for (let x = majorStep; x < width - majorStep / 2; x += majorStep) {
+    labelIndex += 1;
+    ctx.fillText(`${labelIndex}`, x + 12, 32);
+  }
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  labelIndex = 0;
+  for (let y = majorStep; y < height - majorStep / 2; y += majorStep) {
+    labelIndex += 1;
+    ctx.fillText(`${labelIndex}`, width - 32, y - 12);
+  }
 
-  const orderedIds = components.map(component => component.id);
-
-  return (
-    <div className="map-panel">
-      <h3>2D Layout</h3>
-      <svg ref={svgRef} viewBox="0 0 100 100" className="map-svg">
-        <defs>
-          <linearGradient id="board-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="rgba(220, 226, 216, 0.95)" />
-            <stop offset="100%" stopColor="rgba(210, 218, 205, 0.95)" />
-          </linearGradient>
-        </defs>
-        <rect x="8" y="12" width="84" height="76" rx="6" ry="6" fill="url(#board-gradient)" className="map-board" />
-        {orderedIds.length > 1 &&
-          orderedIds.map((id, index) => {
-            const nextId = orderedIds[(index + 1) % orderedIds.length];
-            const start = toSvgCoords(layout[id]);
-            const end = toSvgCoords(layout[nextId]);
-            return (
-              <line
-                key={`${id}-${nextId}`}
-                className="map-connection"
-                x1={start.x}
-                y1={start.y}
-                x2={end.x}
-                y2={end.y}
-              />
-            );
-          })}
-        {orderedIds.map(id => {
-          const { x, y } = toSvgCoords(layout[id]);
-          return (
-            <g key={id}>
-              <circle
-                className={`map-component ${selectedId === id ? 'map-component--selected' : ''}`}
-                cx={x}
-                cy={y}
-                r="6"
-                onPointerDown={event => handlePointerDown(event, id)}
-              />
-              <text className="map-label" x={x} y={y - 9}>
-                {id.toUpperCase()}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-      <p className="map-hint">Drag nodes to reposition components on the board.</p>
-    </div>
-  );
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  return texture;
 }
 
 function createControllerRay(hasGamepad) {
@@ -1302,35 +1631,130 @@ function drawStatsLabel(label, title, lines) {
 
 function createBatteryMesh(label) {
   const group = new THREE.Group();
-  const outer = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.11, 0.11, 0.36, 36),
+
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.26, 0.18, 0.16),
     new THREE.MeshStandardMaterial({
-      color: 0x2755b5,
-      metalness: 0.68,
-      roughness: 0.3,
-      emissive: 0x0a1c48,
-      emissiveIntensity: 0.55,
+      color: 0x1c2434,
+      metalness: 0.45,
+      roughness: 0.52,
+      emissive: 0x0b111b,
+      emissiveIntensity: 0.32,
     }),
   );
-  outer.rotation.x = Math.PI / 2;
-  group.add(outer);
+  body.position.y = 0.09;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
 
-  const capMaterial = new THREE.MeshStandardMaterial({
-    color: 0x8fd8ff,
-    metalness: 1,
-    roughness: 0.12,
-    emissive: 0x1f3c7a,
-    emissiveIntensity: 0.58,
+  const panel = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.22, 0.12),
+    new THREE.MeshStandardMaterial({
+      color: 0x314764,
+      metalness: 0.32,
+      roughness: 0.4,
+      emissive: 0x16243a,
+      emissiveIntensity: 0.22,
+    }),
+  );
+  panel.position.set(0.135, 0.09, 0);
+  panel.rotation.y = -Math.PI / 2;
+  group.add(panel);
+
+  const statusScreen = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.16, 0.06),
+    new THREE.MeshStandardMaterial({
+      color: 0x51c9ff,
+      metalness: 0.15,
+      roughness: 0.3,
+      emissive: 0x2a7aa5,
+      emissiveIntensity: 0.4,
+      transparent: true,
+      opacity: 0.75,
+    }),
+  );
+  statusScreen.position.set(0.136, 0.108, 0);
+  statusScreen.rotation.y = -Math.PI / 2;
+  group.add(statusScreen);
+
+  const knobMaterial = new THREE.MeshStandardMaterial({
+    color: 0x232d44,
+    metalness: 0.35,
+    roughness: 0.52,
+    emissive: 0x111523,
+    emissiveIntensity: 0.18,
   });
-  const positiveCap = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.045, 32), capMaterial);
-  positiveCap.position.set(0.18, 0, 0);
-  positiveCap.rotation.x = Math.PI / 2;
-  group.add(positiveCap);
-  const negativeCap = positiveCap.clone();
-  negativeCap.position.x = -0.18;
-  group.add(negativeCap);
+  const knobGeometry = new THREE.CylinderGeometry(0.018, 0.018, 0.04, 24);
+  const knobA = new THREE.Mesh(knobGeometry, knobMaterial);
+  knobA.position.set(0.125, 0.09, -0.045);
+  knobA.rotation.z = Math.PI / 2;
+  group.add(knobA);
+  const knobB = knobA.clone();
+  knobB.position.z = 0.045;
+  group.add(knobB);
 
-  group.rotation.y = Math.PI / 2;
+  const handle = new THREE.Mesh(
+    new THREE.TorusGeometry(0.085, 0.012, 16, 48),
+    new THREE.MeshStandardMaterial({
+      color: 0x151d29,
+      metalness: 0.4,
+      roughness: 0.6,
+      emissive: 0x090d16,
+      emissiveIntensity: 0.2,
+    }),
+  );
+  handle.position.set(0, 0.18, 0);
+  handle.rotation.x = Math.PI / 2;
+  group.add(handle);
+
+  const postGeometry = new THREE.CylinderGeometry(0.014, 0.014, 0.06, 24);
+  const sleeveGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.02, 24);
+  const positiveMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd03e30,
+    metalness: 0.9,
+    roughness: 0.32,
+    emissive: 0x641910,
+    emissiveIntensity: 0.42,
+  });
+  const negativeMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1f4fb4,
+    metalness: 0.9,
+    roughness: 0.32,
+    emissive: 0x0b1f4c,
+    emissiveIntensity: 0.36,
+  });
+
+  const makePost = (material, offsetZ) => {
+    const post = new THREE.Mesh(postGeometry, material);
+    post.rotation.z = Math.PI / 2;
+    post.position.set(0.145, 0.08, offsetZ);
+    post.castShadow = true;
+    const sleeve = new THREE.Mesh(
+      sleeveGeometry,
+      new THREE.MeshStandardMaterial({
+        color: 0xf4f5f2,
+        metalness: 0.2,
+        roughness: 0.65,
+        emissive: 0xd7d8d3,
+        emissiveIntensity: 0.12,
+      }),
+    );
+    sleeve.rotation.z = Math.PI / 2;
+    sleeve.position.set(0.12, 0.08, offsetZ);
+    sleeve.castShadow = true;
+    group.add(sleeve);
+    group.add(post);
+    return post;
+  };
+
+  const positivePost = makePost(positiveMaterial, 0.05);
+  const negativePost = makePost(negativeMaterial, -0.05);
+
+  group.userData.connectors = {
+    positive: new THREE.Vector3(positivePost.position.x + 0.03, positivePost.position.y, positivePost.position.z),
+    negative: new THREE.Vector3(negativePost.position.x + 0.03, negativePost.position.y, negativePost.position.z),
+  };
+
   return group;
 }
 
@@ -1552,15 +1976,15 @@ function createMeasurementPanel({ id, title, description, size, position, effect
 function componentYOffset(type) {
   switch (type) {
     case 'source':
-      return 0.045;
+      return 0.028;
     case 'resistor':
-      return 0.035;
+      return 0.014;
     case 'capacitor':
-      return 0.04;
+      return 0.02;
     case 'led':
-      return 0.04;
+      return 0.016;
     default:
-      return 0.04;
+      return 0.02;
   }
 }
 
