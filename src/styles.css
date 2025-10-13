@@ -1,0 +1,372 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #060916;
+  overflow: hidden;
+  color: #e9f2ff;
+}
+
+.app-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.webgl-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.vr-button-slot {
+  position: fixed;
+  bottom: 1.8rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  pointer-events: none;
+}
+
+.vr-button-slot button {
+  pointer-events: auto;
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.controls-panel {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 1.5rem;
+  width: 300px;
+  max-width: calc(100vw - 3rem);
+  background: rgba(9, 14, 30, 0.86);
+  border: 1px solid rgba(76, 109, 190, 0.45);
+  border-radius: 14px;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(14px);
+  color: #cfdef5;
+  z-index: 8;
+  transform: translateY(calc(100% - 3.5rem));
+  transition: transform 220ms ease;
+}
+
+.controls-panel--open {
+  transform: translateY(0);
+}
+
+.controls-toggle {
+  width: 100%;
+  padding: 0.9rem 1.2rem;
+  border: none;
+  background: rgba(25, 47, 96, 0.85);
+  color: #a6d2ff;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border-radius: 13px 13px 0 0;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.controls-toggle:hover {
+  background: rgba(35, 66, 132, 0.9);
+}
+
+.controls-content {
+  padding: 1.1rem 1.2rem 1.4rem;
+  display: grid;
+  gap: 1.1rem;
+}
+
+.controls-section h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.9rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #76b6ff;
+}
+
+.component-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.component-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.65rem;
+  border-radius: 9px;
+  background: rgba(13, 20, 41, 0.75);
+  border: 1px solid transparent;
+}
+
+.component-list__item--selected {
+  border-color: rgba(111, 165, 255, 0.7);
+  background: rgba(20, 34, 66, 0.88);
+}
+
+.component-list__label {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  align-items: flex-start;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  gap: 0.15rem;
+}
+
+.component-list__type {
+  font-size: 0.72rem;
+  color: rgba(195, 218, 255, 0.7);
+}
+
+.component-list__actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.component-list__actions button {
+  border: none;
+  background: rgba(60, 94, 168, 0.9);
+  color: #d9e7ff;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.component-list__actions button:hover {
+  background: rgba(80, 122, 210, 0.95);
+}
+
+.component-add {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: rgba(197, 213, 244, 0.9);
+}
+
+.component-add__buttons {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.component-add__buttons button {
+  flex: 1;
+  min-width: 5.5rem;
+  border: none;
+  background: rgba(36, 63, 122, 0.85);
+  color: #bfe0ff;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.component-add__buttons button:hover {
+  background: rgba(52, 88, 168, 0.95);
+}
+
+
+.solver-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  color: rgba(196, 216, 244, 0.85);
+}
+
+.solver-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(80, 120, 212, 0.28);
+  color: #a8c8ff;
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+.solver-pill--active {
+  background: rgba(74, 180, 120, 0.28);
+  color: #9fffd9;
+}
+
+.solver-error {
+  margin: 0;
+  color: #ffb5b5;
+  font-size: 0.75rem;
+}
+
+.solver-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: rgba(204, 228, 255, 0.75);
+}
+
+.control {
+  margin-bottom: 0.85rem;
+}
+
+.control:last-child {
+  margin-bottom: 0.4rem;
+}
+
+.control label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  margin-bottom: 0.35rem;
+  color: #d1e6ff;
+}
+
+.control-value {
+  font-weight: 600;
+  color: #8fd5ff;
+}
+
+.control input[type="range"] {
+  width: 100%;
+  accent-color: #4fa8ff;
+  cursor: pointer;
+}
+
+.controls-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: #b7c8e8;
+}
+
+.controls-list li {
+  margin-bottom: 0.45rem;
+}
+
+.map-panel {
+  position: fixed;
+  top: 1.5rem;
+  right: 1.5rem;
+  width: 240px;
+  background: rgba(233, 237, 226, 0.92);
+  border: 1px solid rgba(125, 135, 120, 0.5);
+  border-radius: 12px;
+  box-shadow: 0 18px 36px rgba(30, 40, 20, 0.22);
+  backdrop-filter: blur(14px);
+  padding: 1rem;
+  z-index: 8;
+  color: #364235;
+}
+
+
+.map-panel h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #4c574c;
+}
+
+.map-svg {
+  width: 100%;
+  height: 170px;
+  border-radius: 10px;
+  background: rgba(237, 240, 230, 0.95);
+}
+
+.map-board {
+  stroke: rgba(120, 130, 115, 0.5);
+  stroke-width: 1.2;
+}
+
+.map-component {
+  fill: #7da37f;
+  stroke: #f2f5ed;
+  stroke-width: 1.4;
+  cursor: grab;
+}
+
+.map-component--selected {
+  fill: #d99f3f;
+  stroke: #f8e7be;
+}
+
+.map-label {
+  font-size: 7px;
+  text-anchor: middle;
+  fill: #4c574c;
+  font-weight: 600;
+}
+
+.map-connection {
+  stroke: rgba(112, 134, 120, 0.6);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 2;
+}
+
+.map-hint {
+  margin: 0.7rem 0 0;
+  font-size: 0.75rem;
+  color: rgba(82, 96, 84, 0.75);
+  text-align: center;
+}
+
+@media (max-width: 1024px) {
+  .map-panel {
+    top: 1rem;
+    right: 1rem;
+    width: 200px;
+  }
+}
+
+@media (max-width: 720px) {
+  .map-panel {
+    position: static;
+    width: calc(100% - 2rem);
+    margin: 1rem auto 0;
+  }
+
+  .controls-panel {
+    left: 50%;
+    transform: translate(-50%, calc(100% - 3.5rem));
+  }
+
+  .controls-panel--open {
+    transform: translate(-50%, 0);
+  }
+
+  .component-add__buttons {
+    flex-direction: column;
+  }
+}
