@@ -2,6 +2,8 @@
 
 A WebXR breadboard lab for experimenting with simple circuits in 3D/VR. The scene uses Three.js with a custom **CodexSpice** solver to drive live measurements, animated current flow, and interactive instrumentation.
 
+![](media/desktop_view10282025.png)
+
 ## Features
 - Expandable breadboard surface with snap-to-hole dragging for components.
 - Component catalogue (source, resistor, capacitor, LED) with real-time parameter tuning.
